@@ -38,8 +38,33 @@ def load_grades(csv_path=DEFAULT_DATA_PATH):
     return grades
 
 
+def assessment_key(student_id, semester, subject, date):
+    """Identity of an assessment within the existing CSV schema.
+
+    A grade row records what happened on (date) in (subject) for one student
+    in one (semester). score, max_score, and credits describe the result of
+    that assessment; they are not part of its identity. Two rows with the
+    same (student_id, semester, subject, date) therefore describe the same
+    assessment, and the second row is a duplicate.
+    """
+    return (student_id.strip(), str(semester).strip(), subject.strip(), date.strip())
+
+
 def save_grade(student_id, subject, score, max_score, date, credits, semester, csv_path=DEFAULT_DATA_PATH):
-    """Appends a new grade row to the CSV file."""
+    """Appends a new grade row to the CSV file, unless the assessment exists.
+
+    Raises:
+        ValueError: If the assessment (student_id + semester + subject + date)
+            is already recorded. The file is left unchanged in that case.
+    """
+    key = assessment_key(student_id, semester, subject, date)
+    for grade in load_grades(csv_path):
+        if assessment_key(grade["student_id"], grade["semester"], grade["subject"], grade["date"]) == key:
+            raise ValueError(
+                f"assessment already exists for student '{student_id}' "
+                f"in {subject} (semester {semester}) on {date}"
+            )
+
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
     file_exists = path.exists()
@@ -105,10 +130,10 @@ def cmd_export(args):
 def cmd_add(args):
     try:
         validate_grade(args.score, args.max_score, args.date)
+        save_grade(args.student_id, args.subject, args.score, args.max_score, args.date, args.credits, args.semester, args.data)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
-    save_grade(args.student_id, args.subject, args.score, args.max_score, args.date, args.credits, args.semester, args.data)
     print(f"Added grade for {args.student_id} in {args.subject}.")
 
 

@@ -113,5 +113,128 @@ class TestAddValidation(unittest.TestCase):
         self.assertEqual(rows[0]["score"], "50.0")
 
 
+class TestDuplicateDetection(unittest.TestCase):
+    """Reject the same assessment being recorded twice (Issue #9).
+
+    The assessment identity is (student_id, semester, subject, date). score,
+    max_score, and credits are the result of the assessment, not its identity,
+    so a corrected score is still the same assessment and must be rejected.
+    """
+
+    def run_add(self, data_path, *args):
+        argv = ["grade_tracker", "--data", str(data_path), "add", *args]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.argv", argv), \
+                contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            try:
+                main()
+            except SystemExit as exc:
+                return exc.code, stdout.getvalue(), stderr.getvalue()
+        return 0, stdout.getvalue(), stderr.getvalue()
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.data_path = Path(self.temp_dir.name) / "grades.csv"
+
+    def read_rows(self):
+        if not self.data_path.exists():
+            return []
+        with self.data_path.open(newline="", encoding="utf-8") as handle:
+            return list(csv.DictReader(handle))
+
+    def test_duplicate_assessment_is_rejected(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("Added grade for S1", stdout)
+        self.assertEqual(len(self.read_rows()), 1)
+
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("assessment already exists", stderr)
+        self.assertNotIn("Added grade", stdout)
+        self.assertEqual(len(self.read_rows()), 1)
+
+    def test_duplicate_does_not_modify_csv(self):
+        self.run_add(self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1")
+        self.run_add(self.data_path, "S1", "Physics", "85", "100", "2026-10-06", "3", "1")
+        self.assertEqual(len(self.read_rows()), 2)
+
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual(code, 2)
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_corrected_score_same_assessment_is_rejected(self):
+        self.run_add(self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1")
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "30", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual(code, 2)
+        self.assertIn("assessment already exists", stderr)
+        rows = self.read_rows()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["score"], "25.0")
+
+    def test_different_subjects_same_date_are_both_accepted(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Physics", "85", "100", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_different_semesters_same_subject_date_are_both_accepted(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "2"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_different_students_same_assessment_are_both_accepted(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S2", "Mathematics", "25", "50", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_same_score_different_assessments_are_both_accepted(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Mathematics", "50", "100", "2026-10-06", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        code, stdout, stderr = self.run_add(
+            self.data_path, "S1", "Physics", "50", "100", "2026-10-07", "3", "1"
+        )
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_save_grade_raises_valueerror_for_duplicate(self):
+        from grade_tracker.cli import save_grade
+
+        save_grade("S1", "Mathematics", 25, 50, "2026-10-06", 3, "1", self.data_path)
+        with self.assertRaises(ValueError):
+            save_grade("S1", "Mathematics", 25, 50, "2026-10-06", 3, "1", self.data_path)
+        self.assertEqual(len(self.read_rows()), 1)
+
+
 if __name__ == "__main__":
     unittest.main()
