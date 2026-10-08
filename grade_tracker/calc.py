@@ -13,6 +13,73 @@ GRADE_POINTS = {
 }
 
 
+def assessment_key(grade):
+    """Authoritative identity of one academic record (single source of truth).
+
+    Used by BOTH the calculation layer (SGPA/CGPA dedup) and the persistence
+    layer (duplicate rejection on write), so the two can never drift apart.
+
+    A grade row records a result for one student, in one (semester), for one
+    (subject) on one (date). score, max_score, and credits describe the
+    result; they are NOT part of its identity, so a corrected score is still
+    the same assessment. Two rows with the same
+    (student_id, semester, subject, date) therefore describe the same
+    academic record, and repeating one must not be counted twice.
+
+    A subject repeated in a *different* semester yields a different key, so
+    legitimate retakes are preserved.
+
+    Returns None when the record is malformed, i.e. it has no (non-empty)
+    subject and therefore no determinate identity. Callers must then treat
+    the record as un-deduplicatable rather than invent an identity for it.
+    score/max_score are deliberately never consulted.
+    """
+    subject = str(grade.get("subject", "")).strip()
+    if not subject:
+        return None
+    return (
+        str(grade.get("student_id", "")).strip(),
+        str(grade.get("semester", "")).strip(),
+        subject.casefold(),
+        str(grade.get("date", "")).strip(),
+    )
+
+
+def _dedupe_assessments(grades):
+    """Keep the first row for each distinct academic record.
+
+    Legacy, manually edited, or corrupted CSV files can contain the same
+    record more than once (even though save_grade now rejects exact
+    duplicates on write). Each distinct record must contribute exactly once
+    to SGPA/CGPA, so repeats are collapsed here rather than counted again.
+
+    A record with no subject is malformed: it has no identity under the
+    schema, so it is never deduplicated (it is always kept). Inventing an
+    identity from score/max_score would wrongly split a corrected record.
+    Records from different semesters are never collapsed with each other.
+    """
+    seen = set()
+    unique = []
+    for g in grades:
+        key = assessment_key(g)
+        if key is None:
+            unique.append(g)
+            continue
+        if key in seen:
+            continue
+        seen.add(key)
+        unique.append(g)
+    return unique
+
+
+def _credit(grade):
+    """Credits of a grade row as a float, falling back to the default of 1.0."""
+    try:
+        return float(grade.get("credits", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+
+
 def validate_grade(score, max_score, date_value):
     """Validate a grade before it can be persisted.
 
@@ -51,11 +118,19 @@ def letter_grade(score, max_score=100):
 
 
 def sgpa(grades, student_id=None, semester=None):
-    """Calculates Semester Grade Point Average on a 10.0 scale."""
+    """Calculates Semester Grade Point Average on a 10.0 scale.
+
+    Each distinct assessment (student_id, semester, subject, date) in the
+    semester contributes exactly once. Duplicate rows for the same assessment
+    — possible in legacy or hand-edited CSV files — are collapsed so a
+    subject cannot be double-counted within one semester.
+    """
     if student_id is not None:
         grades = [g for g in grades if g.get("student_id") == student_id]
     if semester is not None:
         grades = [g for g in grades if str(g.get("semester", "")) == str(semester)]
+
+    grades = _dedupe_assessments(grades)
 
     if not grades:
         return None
@@ -63,7 +138,7 @@ def sgpa(grades, student_id=None, semester=None):
     total_points = 0.0
     total_credits = 0.0
     for g in grades:
-        c = g.get("credits", 1.0)
+        c = _credit(g)
         pts = GRADE_POINTS.get(letter_grade(g["score"], g["max_score"]), 0.0)
         total_points += pts * c
         total_credits += c
@@ -74,9 +149,18 @@ def sgpa(grades, student_id=None, semester=None):
 
 
 def cgpa(grades, student_id=None):
-    """Calculates Cumulative Grade Point Average on a 10.0 scale."""
+    """Calculates Cumulative Grade Point Average on a 10.0 scale.
+
+    Aggregates every distinct assessment across all of the student's
+    semesters. A subject repeated in a later semester is a separate
+    assessment (a legitimate retake) and is kept; only rows that repeat the
+    same (student_id, semester, subject, date) assessment are collapsed, so
+    duplicate records cannot inflate the CGPA.
+    """
     if student_id is not None:
         grades = [g for g in grades if g.get("student_id") == student_id]
+
+    grades = _dedupe_assessments(grades)
 
     if not grades:
         return None
@@ -84,7 +168,7 @@ def cgpa(grades, student_id=None):
     total_points = 0.0
     total_credits = 0.0
     for g in grades:
-        c = g.get("credits", 1.0)
+        c = _credit(g)
         pts = GRADE_POINTS.get(letter_grade(g["score"], g["max_score"]), 0.0)
         total_points += pts * c
         total_credits += c
