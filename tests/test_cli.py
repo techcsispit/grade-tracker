@@ -236,5 +236,103 @@ class TestDuplicateDetection(unittest.TestCase):
         self.assertEqual(len(self.read_rows()), 1)
 
 
+class TestDuplicateRecordsLoadedFromCsv(unittest.TestCase):
+    """SGPA/CGPA must stay correct when the CSV already contains duplicates.
+
+    save_grade rejects duplicates on write, but legacy or hand-edited files
+    can still contain them. These tests load such a file and check the
+    summary numbers (Issue #12).
+    """
+
+    HEADER = "student_id,subject,score,max_score,date,credits,semester\n"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.data_path = Path(self.temp_dir.name) / "grades.csv"
+
+    def write_csv(self, rows):
+        with self.data_path.open("w", newline="", encoding="utf-8") as handle:
+            handle.write(self.HEADER)
+            handle.writelines(rows)
+
+    def run_summary(self, student_id):
+        argv = ["grade_tracker", "--data", str(self.data_path), "summary", student_id]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.argv", argv), \
+                contextlib.redirect_stdout(stdout), \
+                contextlib.redirect_stderr(stderr):
+            try:
+                main()
+            except SystemExit as exc:
+                return exc.code, stdout.getvalue(), stderr.getvalue()
+        return 0, stdout.getvalue(), stderr.getvalue()
+
+    def test_summary_reports_deduplicated_sgpa_and_cgpa(self):
+        """Duplicate Mathematics rows in semester 1 do not skew SGPA/CGPA."""
+        self.write_csv([
+            "S1,Mathematics,95,100,2025-01-15,3,1\n",
+            "S1,Mathematics,70,100,2025-01-15,3,1\n",  # duplicate record
+            "S1,Physics,85,100,2025-01-16,3,1\n",
+            "S1,Mathematics,85,100,2025-06-15,3,2\n",  # legit retake, later semester
+        ])
+        code, stdout, stderr = self.run_summary("S1")
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        # Semester 1: first Mathematics record (A=10) + Physics (B=9), credits 3+3
+        # SGPA = (10*3 + 9*3)/6 = 9.5
+        self.assertIn("Semester 1 (SGPA: 9.5)", stdout)
+        # Semester 2: Mathematics retake (B=9)
+        self.assertIn("Semester 2 (SGPA: 9.0)", stdout)
+        # CGPA: distinct sem1 Math(3), Phy(3), sem2 Math(3)
+        # (10*3 + 9*3 + 9*3)/9 = 84/9 = 9.33
+        self.assertIn("CGPA: 9.33", stdout)
+
+    def test_summary_preserves_retake_in_both_semesters(self):
+        """A repeated subject in a later semester is shown in both semesters."""
+        self.write_csv([
+            "S1,Mathematics,95,100,2025-01-15,3,1\n",
+            "S1,Mathematics,75,100,2025-06-15,3,2\n",
+        ])
+        code, stdout, stderr = self.run_summary("S1")
+        self.assertEqual(code, 0)
+        self.assertIn("Semester 1 (SGPA: 10.0)", stdout)
+        self.assertIn("Semester 2 (SGPA: 8.0)", stdout)
+        # (10*3 + 8*3)/6 = 9.0
+        self.assertIn("CGPA: 9.0", stdout)
+
+    def test_persistence_and_calculation_keys_are_identical(self):
+        """cli.assessment_key must delegate to calc.assessment_key (no drift)."""
+        from grade_tracker.cli import assessment_key as cli_key
+        from grade_tracker.calc import assessment_key as calc_key
+
+        self.assertEqual(
+            cli_key("S1", "1", "Mathematics", "2026-10-06"),
+            calc_key({
+                "student_id": "S1",
+                "semester": "1",
+                "subject": "Mathematics",
+                "date": "2026-10-06",
+            }),
+        )
+
+    def test_legacy_csv_duplicate_corrected_score_is_collapsed(self):
+        """A legacy CSV where the same assessment was re-saved with a new score.
+
+        Identity ignores score, so the re-saved row is the same assessment and
+        is not double-counted; only the first row contributes.
+        """
+        self.write_csv([
+            "S1,Mathematics,70,100,2025-01-15,3,1\n",
+            "S1,Mathematics,95,100,2025-01-15,3,1\n",  # corrected score, same assessment
+            "S1,Physics,85,100,2025-01-16,3,1\n",
+        ])
+        code, stdout, stderr = self.run_summary("S1")
+        self.assertEqual(code, 0)
+        # First (70 -> C=8) row wins: (8*3 + 9*3)/6 = 8.5
+        self.assertIn("Semester 1 (SGPA: 8.5)", stdout)
+
+
 if __name__ == "__main__":
     unittest.main()

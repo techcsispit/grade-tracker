@@ -5,7 +5,14 @@ import csv
 import sys
 from pathlib import Path
 
-from grade_tracker.calc import cgpa, letter_grade, sgpa, subject_average, validate_grade
+from grade_tracker.calc import (
+    assessment_key as calc_assessment_key,
+    cgpa,
+    letter_grade,
+    sgpa,
+    subject_average,
+    validate_grade,
+)
 from grade_tracker.export import build_html
 
 DEFAULT_DATA_PATH = Path(__file__).resolve().parent.parent / "data" / "grades.csv"
@@ -39,15 +46,19 @@ def load_grades(csv_path=DEFAULT_DATA_PATH):
 
 
 def assessment_key(student_id, semester, subject, date):
-    """Identity of an assessment within the existing CSV schema.
+    """Persistence-layer wrapper around the authoritative identity.
 
-    A grade row records what happened on (date) in (subject) for one student
-    in one (semester). score, max_score, and credits describe the result of
-    that assessment; they are not part of its identity. Two rows with the
-    same (student_id, semester, subject, date) therefore describe the same
-    assessment, and the second row is a duplicate.
+    The identity itself lives in grade_tracker.calc.assessment_key (single
+    source of truth for both persistence and calculation). This wrapper keeps
+    the flat (student_id, semester, subject, date) call shape used when
+    saving a grade.
     """
-    return (student_id.strip(), str(semester).strip(), subject.strip(), date.strip())
+    return calc_assessment_key({
+        "student_id": student_id,
+        "semester": semester,
+        "subject": subject,
+        "date": date,
+    })
 
 
 def save_grade(student_id, subject, score, max_score, date, credits, semester, csv_path=DEFAULT_DATA_PATH):
@@ -58,12 +69,13 @@ def save_grade(student_id, subject, score, max_score, date, credits, semester, c
             is already recorded. The file is left unchanged in that case.
     """
     key = assessment_key(student_id, semester, subject, date)
-    for grade in load_grades(csv_path):
-        if assessment_key(grade["student_id"], grade["semester"], grade["subject"], grade["date"]) == key:
-            raise ValueError(
-                f"assessment already exists for student '{student_id}' "
-                f"in {subject} (semester {semester}) on {date}"
-            )
+    if key is not None:
+        for grade in load_grades(csv_path):
+            if assessment_key(grade["student_id"], grade["semester"], grade["subject"], grade["date"]) == key:
+                raise ValueError(
+                    f"assessment already exists for student '{student_id}' "
+                    f"in {subject} (semester {semester}) on {date}"
+                )
 
     path = Path(csv_path)
     path.parent.mkdir(parents=True, exist_ok=True)
