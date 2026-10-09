@@ -1,7 +1,7 @@
 """HTML report generation module for Grade Tracker."""
 
 from pathlib import Path
-from grade_tracker.calc import cgpa, letter_grade, sgpa
+from grade_tracker.calc import cgpa, letter_grade, percentage, sgpa
 from html import escape
 
 # Default roster of enrolled students in the batch
@@ -39,7 +39,9 @@ def build_html(grades, output_path="reports/index.html"):
             
             for g in sem_grades:
                 grade_char = letter_grade(g["score"], g["max_score"])
-                pct = (g["score"] / g["max_score"] * 100) if g["max_score"] > 0 else 0
+                # Display-only rounding (1 decimal); the grade above is decided
+                # from the unrounded percentage, never from this value.
+                pct = float(percentage(g["score"], g["max_score"])) if g["max_score"] > 0 else 0
                 rows.append(
                     f"<tr><td>{escape(g['subject'])}</td><td>{g.get('credits', 3.0)}</td><td>{g['score']} / {g['max_score']} ({pct:.1f}%)</td>"
                     f"<td><span class='badge'>{grade_char}</span></td><td>{g.get('date', '')}</td></tr>"

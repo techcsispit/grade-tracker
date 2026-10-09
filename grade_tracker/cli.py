@@ -9,6 +9,7 @@ from grade_tracker.calc import (
     assessment_key as calc_assessment_key,
     cgpa,
     letter_grade,
+    percentage,
     sgpa,
     subject_average,
     validate_grade,
@@ -120,7 +121,9 @@ def cmd_summary(args):
         print(f"Semester {sem} (SGPA: {sem_sgpa})")
         for g in sem_grades:
             lg = letter_grade(g["score"], g["max_score"])
-            pct = (g["score"] / g["max_score"] * 100) if g["max_score"] > 0 else 0
+            # Display-only rounding (1 decimal); the grade above is decided
+            # from the unrounded percentage, never from this value.
+            pct = float(percentage(g["score"], g["max_score"])) if g["max_score"] > 0 else 0
             print(f"  {g['subject']:<18}: {g['score']:.1f}/{g['max_score']:.1f} ({pct:.1f}%) -> {lg} (Credits: {g['credits']})")
 
 

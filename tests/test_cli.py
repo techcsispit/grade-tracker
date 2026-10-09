@@ -331,7 +331,60 @@ class TestDuplicateRecordsLoadedFromCsv(unittest.TestCase):
         code, stdout, stderr = self.run_summary("S1")
         self.assertEqual(code, 0)
         # First (70 -> C=8) row wins: (8*3 + 9*3)/6 = 8.5
+        # First (70 -> C=8) row wins: (8*3 + 9*3)/6 = 8.5
         self.assertIn("Semester 1 (SGPA: 8.5)", stdout)
+
+
+class TestSummaryOutputFormat(unittest.TestCase):
+    """CLI summary output formatting stays compatible after the precision fix."""
+
+    HEADER = "student_id,subject,score,max_score,date,credits,semester\n"
+
+    def setUp(self):
+        self.temp_dir = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp_dir.cleanup)
+        self.data_path = Path(self.temp_dir.name) / "grades.csv"
+
+    def write_csv(self, rows):
+        with self.data_path.open("w", newline="", encoding="utf-8") as handle:
+            handle.write(self.HEADER)
+            handle.writelines(rows)
+
+    def run_summary(self, student_id):
+        argv = ["grade_tracker", "--data", str(self.data_path), "summary", student_id]
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with mock.patch("sys.argv", argv), \
+                contextlib.redirect_stdout(stdout), contextlib.redirect_stderr(stderr):
+            try:
+                main()
+            except SystemExit as exc:
+                return exc.code, stdout.getvalue(), stderr.getvalue()
+        return 0, stdout.getvalue(), stderr.getvalue()
+
+    def test_percentage_display_rounds_to_one_decimal(self):
+        """Percentage is displayed with 1 decimal; grade uses actual value.
+
+        89.95/100 displays as 90.0% but must be graded B, proving the grade
+        does not come from the rounded display percentage.
+        """
+        self.write_csv(["S1,Mathematics,89.95,100,2025-01-15,3,1\n"])
+        code, stdout, stderr = self.run_summary("S1")
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("(90.0%) -> B", stdout)
+
+    def test_summary_sgpa_and_cgpa_format_unchanged(self):
+        """Existing SGPA/CGPA lines keep their exact format and values."""
+        self.write_csv([
+            "S1,Mathematics,95,100,2025-01-15,3,1\n",
+            "S1,Physics,85,100,2025-01-16,3,1\n",
+        ])
+        code, stdout, stderr = self.run_summary("S1")
+        self.assertEqual(code, 0)
+        self.assertEqual(stderr, "")
+        self.assertIn("Semester 1 (SGPA: 9.5)", stdout)
+        self.assertIn("CGPA: 9.5", stdout)
 
 
 if __name__ == "__main__":
