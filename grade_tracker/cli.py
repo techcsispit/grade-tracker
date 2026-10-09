@@ -2,7 +2,9 @@
 
 import argparse
 import csv
+import os
 import sys
+import tempfile
 from pathlib import Path
 
 from grade_tracker.calc import (
@@ -61,12 +63,71 @@ def assessment_key(student_id, semester, subject, date):
     })
 
 
+CSV_HEADER = ["student_id", "subject", "score", "max_score", "date", "credits", "semester"]
+
+
+def _read_raw_rows(csv_path):
+    """Reads the CSV as raw text so existing rows are rewritten unchanged.
+
+    Rows are kept as strings (never re-parsed as floats) so an atomic
+    rewrite cannot reformat, reorder, or drop existing records.
+    """
+    path = Path(csv_path)
+    if not path.exists():
+        return []
+    with open(path, mode="r", newline="", encoding="utf-8") as f:
+        return [row for row in csv.reader(f) if row]
+
+
+def _write_csv_atomically(path, rows):
+    """Writes ``rows`` to ``path`` atomically.
+
+    The full contents are first written to a temporary file in the same
+    directory as ``path`` (so the replacement stays on one filesystem), then
+    flushed and fsync'd, and only then swapped in with ``os.replace()``. A
+    reader therefore only ever sees the old file or the complete new file,
+    never a partially written one.
+
+    If anything fails before the final ``os.replace()``, the original file is
+    left byte-for-byte unchanged and the temporary file is removed. If
+    ``os.replace()`` itself fails, the original file is also unchanged.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    fd, tmp_name = tempfile.mkstemp(
+        dir=str(path.parent), prefix=f".{path.name}.", suffix=".tmp"
+    )
+    tmp_path = Path(tmp_name)
+    try:
+        with os.fdopen(fd, "w", newline="", encoding="utf-8") as f:
+            writer = csv.writer(f)
+            writer.writerows(rows)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(str(tmp_path), str(path))
+    except BaseException:
+        # Never leave a stray temporary file behind on any failure.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        tmp_path.unlink(missing_ok=True)
+        raise
+
+
 def save_grade(student_id, subject, score, max_score, date, credits, semester, csv_path=DEFAULT_DATA_PATH):
-    """Appends a new grade row to the CSV file, unless the assessment exists.
+    """Persists a new grade row to the CSV file atomically, unless the assessment exists.
+
+    Existing rows are rewritten verbatim and the new record is appended using
+    the existing schema. The file is only replaced once the new contents are
+    fully written and fsync'd, so an interrupted write cannot corrupt it.
 
     Raises:
         ValueError: If the assessment (student_id + semester + subject + date)
             is already recorded. The file is left unchanged in that case.
+        OSError: If the file cannot be written or replaced. The original file
+            is left unchanged in that case.
     """
     key = assessment_key(student_id, semester, subject, date)
     if key is not None:
@@ -77,15 +138,11 @@ def save_grade(student_id, subject, score, max_score, date, credits, semester, c
                     f"in {subject} (semester {semester}) on {date}"
                 )
 
-    path = Path(csv_path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    file_exists = path.exists()
-
-    with open(path, mode="a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        if not file_exists:
-            writer.writerow(["student_id", "subject", "score", "max_score", "date", "credits", "semester"])
-        writer.writerow([student_id, subject, score, max_score, date, credits, semester])
+    rows = _read_raw_rows(csv_path)
+    if not rows:
+        rows.append(list(CSV_HEADER))
+    rows.append([student_id, subject, score, max_score, date, credits, semester])
+    _write_csv_atomically(csv_path, rows)
 
 
 def cmd_list(args):
@@ -146,6 +203,11 @@ def cmd_add(args):
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
+    except OSError as exc:
+        # A failed atomic write leaves the CSV untouched, so the grade must be
+        # reported as an error rather than claimed as saved.
+        print(f"Error: could not save grade: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
     print(f"Added grade for {args.student_id} in {args.subject}.")
 
 
