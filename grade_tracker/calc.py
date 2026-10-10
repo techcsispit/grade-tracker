@@ -1,7 +1,40 @@
-"""Calculation module for academic grades, GPA, and averages."""
+"""Calculation module for academic grades, GPA, and averages.
+
+Numerical policy
+----------------
+1. Percentages are calculated at full precision.
+2. Letter grades are determined from the *unrounded* percentage, never from
+   a rounded display percentage.
+3. Individual percentages are never rounded before being averaged into a
+   subject average.
+4. Intermediate weighted grade-point totals and credit totals are never
+   rounded; only the final user-facing result is rounded, at the existing
+   documented output precision (2 decimals for SGPA/CGPA/subject average,
+   1 decimal for displayed percentages in the CLI/report).
+5. Letter-grade thresholds (90/80/70/60) are unchanged.
+
+Why Decimal is used for classification
+--------------------------------------
+Binary floating-point cannot represent most decimal fractions exactly.
+Computing ``(score / max_score) * 100`` with ``float`` can land a hair
+*below* a threshold even when the values are exactly at that threshold in
+decimal (e.g. ``8.1 / 9`` is exactly 90%, but ``(8.1 / 9) * 100`` evaluates
+to ``89.99999999999999``), misclassifying the grade. Constructing the
+operands with ``Decimal(str(x))`` recovers the shortest round-trip decimal
+text (which is what the CSV/CLI actually stored) and yields an exact decimal
+percentage for classification. Aggregates (averages, GPAs) stay in ``float``
+because their final 2-decimal rounding absorbs representation error
+(verified against exact rational arithmetic), so converting the whole
+module to ``Decimal`` would be unnecessary refactoring.
+"""
 
 from datetime import date
+from decimal import Decimal
 import re
+
+# Percentages are compared against these thresholds exactly, with no
+# epsilon tolerance: a value genuinely below a threshold stays below it.
+GRADE_THRESHOLDS = ((90, "A"), (80, "B"), (70, "C"), (60, "D"))
 
 
 GRADE_POINTS = {
@@ -98,23 +131,37 @@ def validate_grade(score, max_score, date_value):
         raise ValueError("date must be a valid calendar date in YYYY-MM-DD format") from exc
 
 
+def percentage(score, max_score):
+    """Returns the full-precision percentage ``score / max_score * 100``.
+
+    Computed with ``Decimal`` built from each value's shortest round-trip
+    decimal text, so percentages that are exact in decimal (e.g. ``8.1/9``)
+    stay exact instead of drifting a hair below a threshold in binary
+    floating-point. The result is a ``Decimal``; use ``float(...)`` for
+    display or accumulation.
+    """
+    if max_score <= 0:
+        raise ValueError("max_score must be greater than 0")
+    return Decimal(str(score)) / Decimal(str(max_score)) * 100
+
+
 def letter_grade(score, max_score=100):
-    """Determines the letter grade corresponding to a score and max_score."""
+    """Determines the letter grade corresponding to a score and max_score.
+
+    Classification uses the unrounded percentage (see :func:`percentage`),
+    never a rounded display percentage, and compares against the existing
+    thresholds exactly — no epsilon tolerance is applied, so a value
+    genuinely below a threshold keeps the lower grade.
+    """
     if max_score <= 0:
         raise ValueError("max_score must be greater than 0")
 
-    pct = (score / max_score) * 100
+    pct = percentage(score, max_score)
 
-    if pct >= 90:
-        return "A"
-    elif pct >= 80:
-        return "B"
-    elif pct >= 70:
-        return "C"
-    elif pct >= 60:
-        return "D"
-    else:
-        return "F"
+    for threshold, grade in GRADE_THRESHOLDS:
+        if pct >= threshold:
+            return grade
+    return "F"
 
 
 def sgpa(grades, student_id=None, semester=None):
@@ -124,6 +171,10 @@ def sgpa(grades, student_id=None, semester=None):
     semester contributes exactly once. Duplicate rows for the same assessment
     — possible in legacy or hand-edited CSV files — are collapsed so a
     subject cannot be double-counted within one semester.
+
+    Numerical policy: each grade point is classified from the unrounded
+    percentage, weighted grade-point and credit totals are accumulated
+    without rounding, and only the final average is rounded to 2 decimals.
     """
     if student_id is not None:
         grades = [g for g in grades if g.get("student_id") == student_id]
@@ -156,6 +207,9 @@ def cgpa(grades, student_id=None):
     assessment (a legitimate retake) and is kept; only rows that repeat the
     same (student_id, semester, subject, date) assessment are collapsed, so
     duplicate records cannot inflate the CGPA.
+
+    Numerical policy: same as :func:`sgpa` — unrounded classification,
+    unrounded intermediate totals, final result rounded to 2 decimals.
     """
     if student_id is not None:
         grades = [g for g in grades if g.get("student_id") == student_id]
@@ -181,8 +235,11 @@ def cgpa(grades, student_id=None):
 def subject_average(grades, subject):
     """Calculates the average percentage for a given subject.
 
-    Each grade is converted to a percentage first, so marks out of
-    different maximum scores compare fairly (35/50 and 70/100 are both 70%).
+    Each grade is converted to a full-precision percentage first (see
+    :func:`percentage`), so marks out of different maximum scores compare
+    fairly (35/50 and 70/100 are both 70%). Individual percentages are
+    never rounded before averaging; only the final average is rounded to
+    the existing output precision (2 decimals).
 
     Returns None if no entries exist for the subject.
     """
@@ -194,5 +251,5 @@ def subject_average(grades, subject):
     if not matching:
         return None
 
-    percentages = [(g["score"] / g["max_score"]) * 100 for g in matching]
-    return round(sum(percentages) / len(percentages), 2)
+    percentages = [percentage(g["score"], g["max_score"]) for g in matching]
+    return round(float(sum(percentages) / len(percentages)), 2)
