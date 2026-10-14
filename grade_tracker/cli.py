@@ -16,6 +16,7 @@ from pathlib import Path
 
 from grade_tracker.calc import (
     assessment_key as calc_assessment_key,
+    assessment_record_key as calc_assessment_record_key,
     cgpa,
     explain_student_gpa,
     letter_grade,
@@ -489,6 +490,7 @@ def save_grade(
     credits,
     semester,
     csv_path=DEFAULT_DATA_PATH,
+    allow_duplicate=False,
 ):
     """Appends a new grade row to the CSV file, unless the assessment exists.
 
@@ -497,12 +499,22 @@ def save_grade(
     bypass duplicate detection or corrupt the file.
 
     Raises:
-        ValueError: If the grade data is invalid or the assessment
-            (student_id + semester + subject + date) is already recorded.
+        ValueError: If the grade data is invalid, if the four-field assessment
+            identity is already recorded and ``allow_duplicate`` is false, or
+            if an exact row already exists.
             The file is left unchanged in either case.
     """
     validate_grade(score, max_score, date, credits)
     key = assessment_key(student_id, semester, subject, date)
+    new_record_key = calc_assessment_record_key({
+        "student_id": student_id,
+        "semester": semester,
+        "subject": subject,
+        "score": score,
+        "max_score": max_score,
+        "date": date,
+        "credits": credits,
+    })
 
     lock_file = _lock_path_for(csv_path)
     with _InterProcessLock(lock_file) as _lock:
@@ -513,15 +525,24 @@ def save_grade(
         # derived from the authoritative calc.assessment_key so that the
         # persistence layer can never drift from the calculation layer.
         for grade in existing:
-            if assessment_key(
+            existing_key = assessment_key(
                 grade["student_id"],
                 grade["semester"],
                 grade["subject"],
                 grade["date"],
-            ) == key:
+            )
+            if existing_key != key:
+                continue
+            if calc_assessment_record_key(grade) == new_record_key:
+                raise ValueError(
+                    f"assessment already exists with the same grade data for student '{student_id}' "
+                    f"in {subject} (semester {semester}) on {date}"
+                )
+            if not allow_duplicate:
                 raise ValueError(
                     f"assessment already exists for student '{student_id}' "
-                    f"in {subject} (semester {semester}) on {date}"
+                    f"in {subject} (semester {semester}) on {date}; pass "
+                    "--allow-duplicate only when this is a separate assessment"
                 )
 
         # Build the updated CSV contents and write atomically.  ``_append_row``
@@ -942,6 +963,7 @@ def _audit_grades_csv_records(csv_path, collect_records=False):
                             )
                 else:
                     record["credits"] = "3.0"
+                    credits_val = 3.0
 
                 row_has_error = any(
                     message.startswith(f"row {row_number} ")
@@ -949,12 +971,15 @@ def _audit_grades_csv_records(csv_path, collect_records=False):
                     for message in diagnostics
                 )
                 if not row_has_error:
-                    key = calc_assessment_key(
+                    key = calc_assessment_record_key(
                         {
                             "student_id": record["student_id"],
                             "semester": record["semester"],
                             "subject": record["subject"],
+                            "score": score,
+                            "max_score": max_score,
                             "date": record["date"],
+                            "credits": credits_val,
                         }
                     )
                     if key is not None:
@@ -1095,8 +1120,36 @@ def import_grades_csv(source_path, dest_path=DEFAULT_DATA_PATH, on_conflict="err
         err_msg = "source CSV failed validation:\n" + "\n".join(f"  {msg}" for msg in non_dup_errors)
         raise ValueError(err_msg)
 
-    if on_conflict == "error" and intra_duplicates:
-        dup = intra_duplicates[0]
+    # Import retains the conservative four-field conflict policy. Unlike
+    # ``add --allow-duplicate``, import has no per-record opt-in proving that
+    # two matching identities are intentional rather than corrections.
+    import_records = []
+    import_duplicates = list(intra_duplicates)
+    first_source_row_by_identity = {}
+    for item in valid_records:
+        rec = item["record"]
+        identity = calc_assessment_key({
+            "student_id": rec["student_id"],
+            "semester": rec["semester"],
+            "subject": rec["subject"],
+            "date": rec["date"],
+        })
+        first_row = first_source_row_by_identity.get(identity)
+        if first_row is None:
+            first_source_row_by_identity[identity] = item["row_number"]
+            item["import_key"] = identity
+            import_records.append(item)
+        else:
+            import_duplicates.append({
+                "row_number": item["row_number"],
+                "first_row": first_row,
+                "key": identity,
+                "record": rec,
+                "diagnostic": "",
+            })
+
+    if on_conflict == "error" and import_duplicates:
+        dup = import_duplicates[0]
         rec = dup["record"]
         raise ValueError(
             f"source CSV contains duplicate assessment at row {dup['row_number']} "
@@ -1104,29 +1157,22 @@ def import_grades_csv(source_path, dest_path=DEFAULT_DATA_PATH, on_conflict="err
             f"semester={rec['semester']!r}, subject={rec['subject']!r}, date={rec['date']!r}"
         )
 
-    total_valid_considered = len(valid_records) + len(intra_duplicates)
+    total_valid_considered = len(import_records) + len(import_duplicates)
 
     lock_file = _lock_path_for(dest)
     with _InterProcessLock(lock_file) as _lock:
         existing_grades = load_grades(dest)
         existing_keys = set()
         for grade in existing_grades:
-            key = calc_assessment_key(
-                {
-                    "student_id": grade["student_id"],
-                    "semester": grade["semester"],
-                    "subject": grade["subject"],
-                    "date": grade["date"],
-                }
-            )
+            key = calc_assessment_key(grade)
             if key is not None:
                 existing_keys.add(key)
 
         records_to_insert = []
         skipped_dest_conflicts = 0
 
-        for item in valid_records:
-            key = item["key"]
+        for item in import_records:
+            key = item["import_key"]
             rec = item["record"]
             row_num = item["row_number"]
 
@@ -1142,7 +1188,7 @@ def import_grades_csv(source_path, dest_path=DEFAULT_DATA_PATH, on_conflict="err
                 records_to_insert.append(rec)
                 existing_keys.add(key)
 
-        total_skipped = skipped_dest_conflicts + len(intra_duplicates)
+        total_skipped = skipped_dest_conflicts + len(import_duplicates)
         total_imported = len(records_to_insert)
 
         dest.parent.mkdir(parents=True, exist_ok=True)
@@ -1566,7 +1612,11 @@ def cmd_export(args):
 
 def cmd_add(args):
     try:
-        save_grade(args.student_id, args.subject, args.score, args.max_score, args.date, args.credits, args.semester, args.data)
+        save_grade(
+            args.student_id, args.subject, args.score, args.max_score,
+            args.date, args.credits, args.semester, args.data,
+            allow_duplicate=args.allow_duplicate,
+        )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         raise SystemExit(2) from exc
@@ -1980,6 +2030,14 @@ def main():
     p_add.add_argument("date", help="Date (YYYY-MM-DD)")
     p_add.add_argument("credits", type=float, help="Credits for the subject")
     p_add.add_argument("semester", help="Semester number")
+    p_add.add_argument(
+        "--allow-duplicate",
+        action="store_true",
+        help=(
+            "Allow a distinct assessment with the same student, semester, "
+            "subject, and date; exact repeated rows are still rejected"
+        ),
+    )
     p_add.set_defaults(func=cmd_add)
 
 

@@ -250,6 +250,37 @@ class TestDuplicateDetection(unittest.TestCase):
         self.assertEqual(len(rows), 1)
         self.assertEqual(rows[0]["score"], "25.0")
 
+    def test_explicit_same_day_assessment_is_accepted(self):
+        self.run_add(
+            self.data_path,
+            "S1", "Mathematics", "95", "100", "2026-10-06", "3", "1",
+        )
+
+        code, stdout, stderr = self.run_add(
+            self.data_path,
+            "S1", "Mathematics", "55", "100", "2026-10-06", "3", "1",
+            "--allow-duplicate",
+        )
+
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("Added grade", stdout)
+        self.assertEqual(len(self.read_rows()), 2)
+
+    def test_allow_duplicate_still_rejects_exact_repeated_row(self):
+        args = (
+            "S1", "Mathematics", "95", "100", "2026-10-06", "3", "1",
+        )
+        self.run_add(self.data_path, *args)
+
+        code, stdout, stderr = self.run_add(
+            self.data_path, *args, "--allow-duplicate"
+        )
+
+        self.assertEqual(code, 2)
+        self.assertIn("assessment already exists with the same grade data", stderr)
+        self.assertNotIn("Added grade", stdout)
+        self.assertEqual(len(self.read_rows()), 1)
+
     def test_different_subjects_same_date_are_both_accepted(self):
         code, _, stderr = self.run_add(
             self.data_path,
@@ -370,9 +401,9 @@ class TestDuplicateRecordsLoadedFromCsv(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("Semester 1 (SGPA: 9.5)", stdout)
+        self.assertIn("Semester 1 (SGPA: 9.0)", stdout)
         self.assertIn("Semester 2 (SGPA: 9.0)", stdout)
-        self.assertIn("CGPA: 9.33", stdout)
+        self.assertIn("CGPA: 9.0", stdout)
 
     def test_summary_preserves_retake_in_both_semesters(self):
         self.write_csv([
@@ -401,7 +432,7 @@ class TestDuplicateRecordsLoadedFromCsv(unittest.TestCase):
             }),
         )
 
-    def test_legacy_csv_duplicate_corrected_score_is_collapsed(self):
+    def test_same_day_different_scores_are_both_in_summary(self):
         self.write_csv([
             "S1,Mathematics,70,100,2025-01-15,3,1\n",
             "S1,Mathematics,95,100,2025-01-15,3,1\n",
@@ -412,7 +443,7 @@ class TestDuplicateRecordsLoadedFromCsv(unittest.TestCase):
 
         self.assertEqual(code, 0)
         self.assertEqual(stderr, "")
-        self.assertIn("Semester 1 (SGPA: 8.5)", stdout)
+        self.assertIn("Semester 1 (SGPA: 9.0)", stdout)
 
 
 class TestSummaryOutputFormat(unittest.TestCase):
@@ -925,7 +956,7 @@ class TestCmdExplain(unittest.TestCase):
     def test_explain_deduplication_exclusion_reason(self):
         self.write_csv([
             "S1,Mathematics,95,100,2025-01-15,3,1\n",
-            "S1,Mathematics,70,100,2025-01-15,3,1\n",
+            "S1,Mathematics,95,100,2025-01-15,3,1\n",
         ])
         code, stdout, stderr = self.run_explain("S1")
         self.assertEqual(code, 0)
@@ -975,15 +1006,15 @@ class TestCmdExplain(unittest.TestCase):
         self.assertEqual(data["student_id"], "S1")
         self.assertTrue(data["student_exists"])
         self.assertTrue(data["semester_found"])
-        self.assertEqual(data["cgpa"]["gpa"], 9.43)
+        self.assertEqual(data["cgpa"]["gpa"], 9.0)
         self.assertEqual(len(data["semesters"]), 2)
         sem1 = data["semesters"][0]
         self.assertEqual(sem1["semester"], "1")
-        self.assertEqual(sem1["sgpa"], 10.0)
+        self.assertEqual(sem1["sgpa"], 9.0)
         self.assertEqual(len(sem1["records"]), 2)
         self.assertTrue(sem1["records"][0]["included"])
-        self.assertFalse(sem1["records"][1]["included"])
-        self.assertEqual(sem1["records"][1]["exclusion_reason"], "Duplicate assessment in calculation scope")
+        self.assertTrue(sem1["records"][1]["included"])
+        self.assertIsNone(sem1["records"][1]["exclusion_reason"])
 
     def test_explain_json_mode_nonexistent_student(self):
         import json

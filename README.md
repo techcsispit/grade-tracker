@@ -22,7 +22,7 @@ On Windows, use `python` instead of `python3`.
 | `summary <student_id> [--format json]` | One student's marks and GPA; `--format json` emits a JSON document |
 | `explain <student_id> [--semester N] [--format json]` | Explains how assessment marks contribute to a student's SGPA and CGPA; `--format json` emits a JSON document |
 | `average <subject> [--format json]` | The class average for a subject; `--format json` emits a JSON document |
-| `add <student_id> <subject> <score> <max_score> <date> <credits> <semester>` | Adds a mark |
+| `add <student_id> <subject> <score> <max_score> <date> <credits> <semester> [--allow-duplicate]` | Adds a mark; opt in when recording a separate same-day assessment |
 | `edit <student_id> <semester> <subject> <date> [--score N] [--max-score N] [--credits N] [--student-id ID] [--semester N] [--subject NAME] [--date YYYY-MM-DD]` | Edits one existing mark |
 | `export [--output path]` | Writes an HTML report, `reports/index.html` by default |
 | `validate [--format json]` | Audits the CSV for malformed or invalid records, without changing the file; `--format json` emits a JSON document |
@@ -33,6 +33,14 @@ On Windows, use `python` instead of `python3`.
 `edit` corrects an existing record without touching the CSV by hand. The record is identified by its current assessment identity: `student_id`, `semester`, `subject`, and `date`. Only the options you pass are changed — `--score`, `--max-score`, `--credits`, `--student-id`, `--semester`, `--subject`, `--date` — and every omitted option keeps the record's current value (it is never replaced with a default). At least one change option is required.
 
 The whole update runs as one transaction: the command takes the same cross-process lock `add` uses, re-reads the file, applies the change in memory, validates it with the same rules as `add` (score between 0 and `max_score`, `max_score` greater than 0, `date` in `YYYY-MM-DD`), checks that the resulting identity does not duplicate a *different* record, then writes a temporary file next to the CSV, flushes it, and atomically replaces the original. If the target is missing, several records match it (ambiguous), validation fails, or the write fails, the command exits 2 with an error on stderr and the file is left byte-for-byte unchanged. Retakes in a different semester or on a different date are still allowed, because they are different assessments.
+
+`add` normally rejects a second row with the same student, semester, subject,
+and date so a corrected score cannot accidentally become another assessment;
+use `--allow-duplicate` only when the row is a genuinely separate same-day
+assessment. The authoritative identity remains those four fields for editing
+and corrections. GPA calculations and validation compare the complete stored
+grade data so distinct opted-in assessments count independently, while exact
+repeated rows are still rejected and counted only once.
 
 `validate` is strictly read-only: it never rewrites, repairs, or deletes records, so file timestamps and bytes are untouched. Each problem is reported on stderr with its CSV row number (the header is row 1, the first data record is row 2), the affected field, and a reason. It exits 0 when the file is clean and 1 when any problem is found. Rows that `list`/`summary` would silently skip (a blank student ID or subject, a non-numeric score, and so on) are flagged here instead of being dropped. Legacy rows that simply omit the optional `credits` or `semester` columns are still accepted, matching the loader's documented defaults of 3.0 credits and semester 1.
 

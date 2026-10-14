@@ -257,7 +257,7 @@ class TestValidateCommand(unittest.TestCase):
             "row 2, field date: '2025-02-30' is not a valid calendar date", stderr
         )
 
-    def test_duplicate_assessment_is_flagged_with_both_rows(self):
+    def test_distinct_same_day_assessments_pass_validation(self):
         self.write_csv([
             "S1,Mathematics,95,100,2025-01-15,3,1\n",
             "S1,Mathematics,70,100,2025-01-15,3,1\n",
@@ -265,14 +265,12 @@ class TestValidateCommand(unittest.TestCase):
 
         code, _, stderr = self.run_validate()
 
-        self.assertEqual(code, 1)
-        self.assertIn("row 3: duplicate assessment of row 2", stderr)
-        self.assertIn("subject 'Mathematics'", stderr)
+        self.assertEqual((code, stderr), (0, ""))
 
     def test_case_insensitive_subject_duplicate_is_flagged(self):
         self.write_csv([
             "S1,Mathematics,95,100,2025-01-15,3,1\n",
-            "S1,MATHEMATICS,70,100,2025-01-15,3,1\n",
+            "S1,MATHEMATICS,95,100,2025-01-15,3,1\n",
         ])
 
         code, _, stderr = self.run_validate()
@@ -378,7 +376,7 @@ class TestValidateCommand(unittest.TestCase):
 
         self.assertEqual((code, stderr), (0, ""))
 
-    def test_blank_credits_cell_still_allows_duplicate_detection(self):
+    def test_blank_credits_cell_allows_distinct_same_day_assessments(self):
         self.write_csv([
             "S1,Mathematics,95,100,2025-01-15,,1\n",
             "S1,Mathematics,70,100,2025-01-15,,1\n",
@@ -386,8 +384,7 @@ class TestValidateCommand(unittest.TestCase):
 
         code, _, stderr = self.run_validate()
 
-        self.assertEqual(code, 1)
-        self.assertIn("row 3: duplicate assessment of row 2", stderr)
+        self.assertEqual((code, stderr), (0, ""))
 
     def test_blank_line_between_records_is_flagged(self):
         self.write_csv([
