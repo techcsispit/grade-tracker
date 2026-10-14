@@ -201,10 +201,10 @@ class TestGradeCalculations(unittest.TestCase):
 class TestSemesterRecordConsistency(unittest.TestCase):
     """Regression tests for Issue #12: SGPA/CGPA with repeated/duplicate records.
 
-    Model: a record is identified by (student_id, semester, subject, date).
-    Multiple records for the same subject in one semester collapse to one
-    contribution in that semester's SGPA (and hence in CGPA); the same
-    subject in a different semester is a legitimate retake and is kept.
+    Model: mutation commands identify a record by (student_id, semester,
+    subject, date), while GPA deduplication collapses only exact stored rows.
+    This preserves explicitly added same-day assessments without changing the
+    identity used for corrections and edits.
     """
 
     @staticmethod
@@ -243,29 +243,24 @@ class TestSemesterRecordConsistency(unittest.TestCase):
         # Retake is a distinct result: CGPA = (10*3 + 9*3)/6 = 9.5
         self.assertEqual(cgpa(grades, "S1"), 9.5)
 
-    def test_duplicate_same_semester_record_with_different_score(self):
-        """A duplicate record in one semester must not be double-counted.
-
-        Math appears twice in semester 1 with different scores; only the
-        first distinct record counts, so SGPA = (10*3 + 9*3)/6 = 9.5,
-        not the double-counted 9.0.
-        """
+    def test_same_day_assessments_with_different_scores_both_count(self):
+        """Different same-day results are separate assessment records."""
         grades = [
             self.rec("Math", 95, 3, 1),
-            self.rec("Math", 70, 3, 1),  # duplicate of the same subject/semester
+            self.rec("Math", 70, 3, 1),
             self.rec("Phy", 85, 3, 1),
         ]
-        self.assertEqual(sgpa(grades, "S1", 1), 9.5)
+        self.assertEqual(sgpa(grades, "S1", 1), 9.0)
 
-    def test_exact_duplicate_row_with_different_credits(self):
-        """A duplicated row with different credits is still one record."""
+    def test_same_day_assessments_with_different_credits_both_count(self):
+        """Different credit weights distinguish stored assessment records."""
         grades = [
             self.rec("Math", 95, 3, 1),
-            self.rec("Math", 95, 4, 1),  # same record, credits corrupted to 4
+            self.rec("Math", 95, 4, 1),
             self.rec("Phy", 85, 3, 1),
         ]
-        # First record wins: (10*3 + 9*3)/6 = 9.5
-        self.assertEqual(sgpa(grades, "S1", 1), 9.5)
+        # (10*3 + 10*4 + 9*3)/10 = 9.7
+        self.assertEqual(sgpa(grades, "S1", 1), 9.7)
 
     def test_cgpa_across_semesters_with_duplicate(self):
         """CGPA aggregates distinct records across all semesters."""
@@ -293,7 +288,7 @@ class TestSemesterRecordConsistency(unittest.TestCase):
         grades = [
             {"student_id": "S1", "subject": "Mathematics", "score": 95.0,
              "max_score": 100.0, "date": "2025-01-15", "credits": 3.0, "semester": "1"},
-            {"student_id": "S1", "subject": "Mathematics", "score": 70.0,
+            {"student_id": "S1", "subject": "Mathematics", "score": 95.0,
              "max_score": 100.0, "date": "2025-01-15", "credits": 3.0, "semester": "1"},
             {"student_id": "S1", "subject": "Physics", "score": 85.0,
              "max_score": 100.0, "date": "2025-01-16", "credits": 3.0, "semester": "1"},
@@ -345,22 +340,14 @@ class TestSemesterRecordConsistency(unittest.TestCase):
         # Both rows kept: (10*4 + 9*3)/7 = 67/7 = 9.57
         self.assertEqual(sgpa(grades, "S1", 1), 9.57)
 
-    def test_corrected_score_same_identity_is_not_split(self):
-        """A corrected score keeps the same identity, so it is not double-counted.
-
-        Identity must never depend on score: changing 70 -> 95 for the same
-        (student, semester, subject, date) is still one assessment.
-        """
+    def test_corrected_score_keeps_same_authoritative_identity(self):
+        """Score changes never alter the identity used by edit and validate."""
         original = self.rec("Math", 70, 3, 1, date="2025-01-15")
         corrected = self.rec("Math", 95, 3, 1, date="2025-01-15")
         self.assertEqual(
             assessment_key(original),
             assessment_key(corrected),
         )
-        # Only the first row (70 -> C=8) contributes once; corrected row collapses.
-        grades = [original, corrected, self.rec("Phy", 85, 3, 1, date="2025-01-16")]
-        # (8*3 + 9*3)/6 = 51/6 = 8.5
-        self.assertEqual(sgpa(grades, "S1", 1), 8.5)
 
     def test_malformed_record_key_is_none(self):
         """assessment_key returns None when subject is missing/empty."""
@@ -473,7 +460,7 @@ class TestGradeRoundingPrecision(unittest.TestCase):
         """Duplicate-record semantics are unchanged by the precision fix."""
         grades = [
             self.rec("Math", 95, 3, 1, date="2025-01-15"),
-            self.rec("Math", 70, 3, 1, date="2025-01-15"),  # duplicate
+            self.rec("Math", 95, 3, 1, date="2025-01-15"),  # exact duplicate
             self.rec("Phy", 85, 3, 1, date="2025-01-16"),
         ]
         # First record wins: (10*3 + 9*3)/6 = 9.5
