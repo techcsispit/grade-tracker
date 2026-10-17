@@ -258,6 +258,25 @@ class TestImportCLI(unittest.TestCase):
         self.assertIn("row 3, field score:", stderr)
         self.assertFalse(self.dest_path.exists())
 
+    def test_rejects_negative_and_non_finite_credits_without_partial_import(self):
+        for credits in ("-2", "nan", "inf", "-inf"):
+            with self.subTest(credits=credits):
+                self.write_csv(
+                    self.source_path,
+                    [
+                        "S1,Mathematics,90,100,2026-01-10,3.0,1\n",
+                        f"S1,Physics,85,100,2026-01-11,{credits},1\n",
+                    ],
+                )
+                code, stdout, stderr = self.run_cli_import(self.source_path)
+                self.assertEqual(code, 1)
+                self.assertEqual(stdout, "")
+                self.assertIn("row 3, field credits:", stderr)
+                self.assertIn(
+                    "must be a finite number greater than or equal to 0", stderr
+                )
+                self.assertFalse(self.dest_path.exists())
+
     # --- 3. Conflict Resolution ---
 
     def test_conflict_intra_file_error_policy(self):

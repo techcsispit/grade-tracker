@@ -182,6 +182,14 @@ class TestEditValidation(EditTestCase):
             "--max-score", "0", expected_error="max_score must be greater than 0"
         )
 
+    def test_rejects_negative_and_non_finite_credits(self):
+        for credits in ("-2", "nan", "inf"):
+            with self.subTest(credits=credits):
+                self.assert_rejected(
+                    "--credits", credits,
+                    expected_error="credits must be a finite number greater than or equal to 0",
+                )
+
     def test_rejects_malformed_date(self):
         self.assert_rejected(
             "--date", "not-a-date", expected_error="date must use YYYY-MM-DD format"

@@ -496,9 +496,11 @@ def save_grade(
     bypass duplicate detection or corrupt the file.
 
     Raises:
-        ValueError: If the assessment (student_id + semester + subject + date)
-            is already recorded.  The file is left unchanged in that case.
+        ValueError: If the grade data is invalid or the assessment
+            (student_id + semester + subject + date) is already recorded.
+            The file is left unchanged in either case.
     """
+    validate_grade(score, max_score, date, credits)
     key = assessment_key(student_id, semester, subject, date)
 
     lock_file = _lock_path_for(csv_path)
@@ -662,7 +664,10 @@ def edit_grade(
 
         # Validate the complete updated record with the existing rules.
         validate_grade(
-            float(updated["score"]), float(updated["max_score"]), updated["date"]
+            float(updated["score"]),
+            float(updated["max_score"]),
+            updated["date"],
+            float(updated["credits"]),
         )
 
         # The resulting identity must not collide with any *other* record;
@@ -921,14 +926,19 @@ def _audit_grades_csv_records(csv_path, collect_records=False):
                 if record["credits"] is not None and record["credits"] != "":
                     try:
                         credits_val = float(record["credits"])
-                        if not math.isfinite(credits_val):
-                            raise ValueError
                     except ValueError:
                         diagnostics.append(
                             f"row {row_number}, field credits: "
                             f"{_format_value_for_display(record['credits'])} "
                             "is not a numeric credit value"
                         )
+                    else:
+                        if not math.isfinite(credits_val) or credits_val < 0:
+                            diagnostics.append(
+                                f"row {row_number}, field credits: "
+                                f"{_format_value_for_display(record['credits'])} "
+                                "must be a finite number greater than or equal to 0"
+                            )
                 else:
                     record["credits"] = "3.0"
 
@@ -1403,7 +1413,6 @@ def cmd_export(args):
 
 def cmd_add(args):
     try:
-        validate_grade(args.score, args.max_score, args.date)
         save_grade(args.student_id, args.subject, args.score, args.max_score, args.date, args.credits, args.semester, args.data)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)

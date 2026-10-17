@@ -73,6 +73,18 @@ class TestAddValidation(unittest.TestCase):
             expected_error="score must be between 0 and max_score",
         )
 
+    def test_rejects_negative_credits_without_writing(self):
+        self.assert_rejected(
+            "S1", "Mathematics", "50", "100", "2026-10-05", "-2", "1",
+            expected_error="credits must be a finite number greater than or equal to 0",
+        )
+
+    def test_rejects_non_finite_credits_without_writing(self):
+        self.assert_rejected(
+            "S1", "Mathematics", "50", "100", "2026-10-05", "nan", "1",
+            expected_error="credits must be a finite number greater than or equal to 0",
+        )
+
     def test_rejects_malformed_date_without_writing(self):
         self.assert_rejected(
             "S1", "Mathematics", "50", "100", "not-a-date", "3", "1",
@@ -105,6 +117,27 @@ class TestAddValidation(unittest.TestCase):
                 "semester": "1",
             }],
         )
+
+    def test_accepts_zero_credits_boundary(self):
+        code, stdout, stderr = self.run_add(
+            self.data_path,
+            "S1", "Mathematics", "50", "100", "2026-10-05", "0", "1",
+        )
+
+        self.assertEqual((code, stderr), (0, ""))
+        self.assertIn("Added grade for S1", stdout)
+        self.assertEqual(self.read_rows()[0]["credits"], "0.0")
+
+    def test_save_grade_rejects_negative_credits_without_writing(self):
+        from grade_tracker.cli import save_grade
+
+        with self.assertRaisesRegex(ValueError, "credits must be"):
+            save_grade(
+                "S1", "Mathematics", 50, 100, "2026-10-05", -2, "1",
+                self.data_path,
+            )
+
+        self.assertEqual(self.read_rows(), [])
 
     def test_accepts_score_equal_to_max_boundary(self):
         code, stdout, stderr = self.run_add(
