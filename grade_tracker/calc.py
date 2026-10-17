@@ -78,8 +78,30 @@ def assessment_key(grade):
     )
 
 
+def assessment_record_key(grade):
+    """Return the complete stored-record key used only for GPA deduplication.
+
+    ``assessment_key`` remains the authoritative four-field identity used by
+    add/edit/import/validate.  Score, maximum score, and credits deliberately
+    stay outside that identity so a correction still addresses the same
+    assessment.  Once multiple same-day assessments have been explicitly
+    stored, however, calculations must distinguish their complete grade data
+    or one of them would silently disappear from SGPA/CGPA.
+
+    Exact repeated rows share this key and are still counted only once.
+    """
+    key = assessment_key(grade)
+    if key is None:
+        return None
+    return key + (
+        grade.get("score"),
+        grade.get("max_score"),
+        _credit(grade),
+    )
+
+
 def _dedupe_assessments(grades):
-    """Keep the first row for each distinct academic record.
+    """Keep the first copy of each complete stored grade record.
 
     Legacy, manually edited, or corrupted CSV files can contain the same
     record more than once (even though save_grade now rejects exact
@@ -87,14 +109,14 @@ def _dedupe_assessments(grades):
     to SGPA/CGPA, so repeats are collapsed here rather than counted again.
 
     A record with no subject is malformed: it has no identity under the
-    schema, so it is never deduplicated (it is always kept). Inventing an
-    identity from score/max_score would wrongly split a corrected record.
-    Records from different semesters are never collapsed with each other.
+    schema, so it is never deduplicated (it is always kept). Records that
+    share the four-field assessment identity but differ in grade data are
+    separate same-day assessments and are both retained.
     """
     seen = set()
     unique = []
     for g in grades:
-        key = assessment_key(g)
+        key = assessment_record_key(g)
         if key is None:
             unique.append(g)
             continue
@@ -167,10 +189,9 @@ def letter_grade(score, max_score=100):
 def sgpa(grades, student_id=None, semester=None):
     """Calculates Semester Grade Point Average on a 10.0 scale.
 
-    Each distinct assessment (student_id, semester, subject, date) in the
-    semester contributes exactly once. Duplicate rows for the same assessment
-    — possible in legacy or hand-edited CSV files — are collapsed so a
-    subject cannot be double-counted within one semester.
+    Each distinct stored assessment in the semester contributes exactly once.
+    Exact duplicate rows are collapsed, while same-day assessments with
+    different grade data are retained.
 
     Numerical policy: each grade point is classified from the unrounded
     percentage, weighted grade-point and credit totals are accumulated
@@ -204,9 +225,8 @@ def cgpa(grades, student_id=None):
 
     Aggregates every distinct assessment across all of the student's
     semesters. A subject repeated in a later semester is a separate
-    assessment (a legitimate retake) and is kept; only rows that repeat the
-    same (student_id, semester, subject, date) assessment are collapsed, so
-    duplicate records cannot inflate the CGPA.
+    assessment (a legitimate retake) and is kept. Only exact repeated rows
+    are collapsed; distinct same-day assessment results are retained.
 
     Numerical policy: same as :func:`sgpa` — unrounded classification,
     unrounded intermediate totals, final result rounded to 2 decimals.
