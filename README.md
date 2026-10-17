@@ -62,7 +62,9 @@ The whole update runs as one transaction: the command takes the same cross-proce
 - Grades go by percentage: 90 and above is A, 80–89 B, 70–79 C, 60–69 D, below 60 F.
 - GPA is on a 4-point scale: A 4, B 3, C 2, D 1, F 0.
 - A subject's average is the average percentage, so marks out of different totals compare fairly. 35/50 and 70/100 are both 70%.
-- `add` refuses a score below 0 or above the maximum, a maximum of 0 or less, and a date that isn't `YYYY-MM-DD`.
+- `add`, `edit`, and `import` refuse negative or non-finite credits. Grade writes
+  also reject a score below 0 or above the maximum, a maximum of 0 or less, and
+  a date that isn't `YYYY-MM-DD`.
 - The report has a card for every student in the CSV, and only those.
 - Everything in the report is shown as plain text. A subject name containing HTML is displayed, not run.
 

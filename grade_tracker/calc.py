@@ -30,6 +30,7 @@ module to ``Decimal`` would be unnecessary refactoring.
 
 from datetime import date
 from decimal import Decimal
+import math
 import re
 
 # Percentages are compared against these thresholds exactly, with no
@@ -113,16 +114,18 @@ def _credit(grade):
         return 1.0
 
 
-def validate_grade(score, max_score, date_value):
+def validate_grade(score, max_score, date_value, credits=None):
     """Validate a grade before it can be persisted.
 
     Raises:
-        ValueError: If the score range or calendar date is invalid.
+        ValueError: If the score range, credits, or calendar date is invalid.
     """
     if max_score <= 0:
         raise ValueError("max_score must be greater than 0")
     if not 0 <= score <= max_score:
         raise ValueError("score must be between 0 and max_score")
+    if credits is not None and (not math.isfinite(credits) or credits < 0):
+        raise ValueError("credits must be a finite number greater than or equal to 0")
     if not isinstance(date_value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", date_value):
         raise ValueError("date must use YYYY-MM-DD format")
     try:
