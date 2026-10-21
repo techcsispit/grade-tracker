@@ -567,11 +567,16 @@ def edit_grade(
     new_semester=None,
     new_subject=None,
     new_date=None,
+    current_score=None,
+    current_max_score=None,
+    current_credits=None,
 ):
     """Edit one existing grade row in ``csv_path`` as a single transaction.
 
     The target record is identified by its current assessment identity
-    ``(student_id, semester, subject, date)``.  Any change option left as
+    ``(student_id, semester, subject, date)``.  When same-day assessments
+    share that identity, the optional ``current_*`` values narrow the match
+    using the record's values before editing. Any change option left as
     ``None`` keeps the record's existing value — omitted options are never
     replaced with defaults.
 
@@ -634,6 +639,28 @@ def edit_grade(
             cell(row, "date") or "",
         )
 
+    def numeric_cell(row, name, default):
+        value = cell(row, name)
+        if value is None or value == "":
+            value = default
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
+    def row_record_key(row):
+        return calc_assessment_record_key(
+            {
+                "student_id": cell(row, "student_id") or "",
+                "semester": cell(row, "semester") or "1",
+                "subject": cell(row, "subject") or "",
+                "date": cell(row, "date") or "",
+                "score": numeric_cell(row, "score", 0.0),
+                "max_score": numeric_cell(row, "max_score", 0.0),
+                "credits": numeric_cell(row, "credits", 3.0),
+            }
+        )
+
     lock_file = _lock_path_for(csv_path)
     with _InterProcessLock(lock_file) as _lock:
         # Read the latest persisted rows while holding the lock.
@@ -648,17 +675,29 @@ def edit_grade(
             if _row_has_visible_content(row) and row_key(row) == target_key
         ]
 
+        selectors = (
+            ("score", current_score, 0.0),
+            ("max_score", current_max_score, 0.0),
+            ("credits", current_credits, 3.0),
+        )
+        for name, expected, default in selectors:
+            if expected is not None:
+                matches = [
+                    position for position in matches
+                    if numeric_cell(rows[position], name, default) == expected
+                ]
+
         if not matches:
             raise ValueError(
                 f"no record found for student '{student_id}' (semester {semester}) "
-                f"in {subject} on {date}"
+                f"in {subject} on {date} matching the supplied current values"
             )
         if len(matches) > 1:
             raise ValueError(
                 f"ambiguous target: {len(matches)} records match student "
                 f"'{student_id}' (semester {semester}) in {subject} on {date}; "
-                "the file contains duplicate assessments — repair it with "
-                "'validate' before editing"
+                "use --current-score, --current-max-score, and/or "
+                "--current-credits to select one assessment"
             )
 
         target_position = matches[0]
@@ -692,19 +731,34 @@ def edit_grade(
             float(updated["credits"]),
         )
 
-        # The resulting identity must not collide with any *other* record;
-        # the target itself is excluded so retakes and other legitimate
-        # duplicates targeting the same row remain unaffected.
-        new_key = assessment_key(
-            updated["student_id"], updated["semester"], updated["subject"], updated["date"]
+        # Same-day assessments may intentionally share the target's existing
+        # four-field identity, so value-only edits reject only a complete
+        # stored-record duplicate. Moving a record onto a different identity
+        # remains conservative and requires that identity to be unused.
+        new_identity = assessment_key(
+            updated["student_id"], updated["semester"],
+            updated["subject"], updated["date"]
+        )
+        new_key = calc_assessment_record_key(
+            {
+                **updated,
+                "score": float(updated["score"]),
+                "max_score": float(updated["max_score"]),
+                "credits": float(updated["credits"]),
+            }
         )
         for position, row in enumerate(rows):
             if position == target_position or not _row_has_visible_content(row):
                 continue
-            other_key = row_key(row)
-            if other_key is not None and other_key == new_key:
+            other_identity = row_key(row)
+            is_duplicate = (
+                other_identity == new_identity
+                if new_identity != target_key
+                else row_record_key(row) == new_key
+            )
+            if is_duplicate:
                 raise ValueError(
-                    "assessment already exists for student "
+                    "assessment already exists with the same grade data for student "
                     f"'{updated['student_id']}' in {updated['subject']} "
                     f"(semester {updated['semester']}) on {updated['date']}"
                 )
@@ -1657,6 +1711,9 @@ def cmd_edit(args):
             new_semester=args.new_semester,
             new_subject=args.new_subject,
             new_date=args.new_date,
+            current_score=args.current_score,
+            current_max_score=args.current_max_score,
+            current_credits=args.current_credits,
         )
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
@@ -2063,7 +2120,8 @@ def main():
         description=(
             "Edit an existing grade record. The target record is identified "
             "by its current assessment identity: STUDENT_ID, SEMESTER, "
-            "SUBJECT, and DATE. Omitted change options keep the record's "
+            "SUBJECT, and DATE. Use the --current-* selectors when multiple "
+            "same-day assessments share that identity. Omitted change options keep the record's "
             "current value; at least one change option is required. The edit "
             "is applied as a single transaction under the same cross-process "
             "lock and atomic write used by 'add'. If the target does not "
@@ -2075,6 +2133,18 @@ def main():
     p_edit.add_argument("semester", help="Semester of the record to edit")
     p_edit.add_argument("subject", help="Subject of the record to edit")
     p_edit.add_argument("date", help="Date of the record to edit (YYYY-MM-DD)")
+    p_edit.add_argument(
+        "--current-score", type=float, default=None,
+        help="Current score used to select one matching same-day assessment",
+    )
+    p_edit.add_argument(
+        "--current-max-score", type=float, default=None,
+        help="Current maximum score used to select one matching same-day assessment",
+    )
+    p_edit.add_argument(
+        "--current-credits", type=float, default=None,
+        help="Current credits used to select one matching same-day assessment",
+    )
     p_edit.add_argument(
         "--score", type=float, default=None,
         help="New score (omit to keep the current value)",
